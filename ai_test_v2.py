@@ -1,6 +1,11 @@
 import os, requests
-from langchain.agents import create_pandas_dataframe_agent
+from langchain.agents import create_pandas_dataframe_agent, load_tools, Tool
 from langchain.llms import OpenAI, PromptLayerOpenAI
+from langchain.chains import SimpleSequentialChain, LLMChain, ConversationChain
+from langchain.prompts import PromptTemplate
+from langchain.memory import SimpleMemory
+from langchain.chains.conversation.memory import ConversationBufferWindowMemory
+from langchain.chat_models import ChatOpenAI
 import promptlayer
 import pandas as pd
 import pyaudio
@@ -37,9 +42,14 @@ def getConfigs(config_file):
     global PROMPT_LAYER_API
     PROMPT_LAYER_API = config['API']['PROMPT_LAYER_API']
     promptlayer.api_key = PROMPT_LAYER_API
-    print(OPENAI_API_KEY)
+    # os.environ['TWILIO_ACOUNT_SID'] = config['TWILIO']['TWILIO_ACOUNT_SID']
+    # os.environ['TWILIO_AUTH_TOKEN'] = config['TWILIO']['TWILIO_AUTH_TOKEN']
+
+    # print(OPENAI_API_KEY)
 
 
+# agent_prompt = "You are working with a pandas dataframe in Python. The name of the dataframe is `df`.\nYou should use the tools below to answer the question posed of you:\n\npython_repl_ast: A Python shell. Use this to execute python commands. Input should be a valid python command. When using this tool, sometimes output is abbreviated - make sure it does not look abbreviated before using it in your answer.\n\nHuman: You can ask a human for guidance when you think you got stuck or you are not sure what to do next. The input should be a question for the human.\n\nPlease note:\n\nIf the question requires you to modify the dataframe, please ensure that the format of any modification matches the rest of the dataframe. If you are asked to add a new row, please ensure that you have been provided all the column values to fill that row. As long as you are missing values, do not create the new row and continue to ask the user for the values you are missing. Also, please make sure to check your memory for context\n\nUse the following format:\n\nQuestion: the input question you must answer\nThought: you should always think about what to do\nAction: the action to take, should be one of [python_repl_ast]\nAction Input: the input to the action\nObservation: the result of the action\n... (this Thought/Action/Action Input/Observation can repeat N times)\nThought: I now know the final answer\nFinal Answer: the final answer to the original input question\n\n\nThis is the result of `print(df.head())`:\n{df}\n\nBegin!\n{chat_history}\nQuestion: {input}\n{agent_scratchpad}"
+agent_prompt = "You are working with a pandas dataframe in Python. The name of the dataframe is `df`.\nYou should use the tools below to answer the question posed of you:\n\npython_repl_ast: A Python shell. Use this to execute python commands. Input should be a valid python command. When using this tool, sometimes output is abbreviated - make sure it does not look abbreviated before using it in your answer.\n\ntalk_to_me: You can ask a human for guidance when you think you got stuck or you are not sure what to do next. Simply output a question for the Human.\n\nPlease note:\n\nIf the question requires you to modify the dataframe, please ensure that the format of any modification matches the rest of the dataframe. If you are asked to add a new row, please ensure that you have been provided all the column values to fill that row. As long as you are missing values, do not create the new row and continue to ask the user for the values you are missing. Also, please make sure to check your memory for context\n\n Also note that to get the length of dataframe `df` you must use len(df.index) rather than len(df)\n\nUse the following format:\n\nQuestion: the input question you must answer\nThought: you should always think about what to do\nAction: the action to take, should be one of [python_repl_ast]\nAction Input: the input to the action\nObservation: the result of the action\n... (this Thought/Action/Action Input/Observation can repeat N times)\nThought: I now know the final answer\nFinal Answer: the final answer to the original input question\n\n\nThis is the result of `print(df.head())`:\n{df}\n\nBegin!\n{chat_history}\nQuestion: {input}\n{agent_scratchpad}"
 
 
 # print("=========")
@@ -52,14 +62,36 @@ FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
 RECORD_SECONDS = 3  # adjust this to the desired length of the recording
-# Need to make a config file for this stuff
-# WAVE_OUTPUT_FILENAME = "recording.wav"
-# ALT_ADVISOR_VOICE_ID = "1c8JE4vBzynMqcLpEH6u"
-# ADVISOR_VOICE_ID = "tu6IpO2JH3DKEu8ZuJ44"
-ADVISOR_CUSTOM_PROMPT = "Answer in the style of a friendly assistant"
+
+with open('agent_prompt.txt', 'r') as file:
+    agent_prompt = file.read()
+# print(ADVISOR_CUSTOM_PROMPT)
+ADVISOR_CUSTOM_PROMPT = "You are a personal assistant, given information please provide it in a simple way\n Information: {output}\n reply: "
 # RACHEL_PROMPT = "21m00Tcm4TlvDq8ikWAM"
 p = pyaudio.PyAudio()
 
+
+
+def voice(input):
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ADVISOR_VOICE_ID}/stream"
+    data = {
+        "text": input,
+        "voice_settings": {
+            "stability": 0.1,
+            "similarity_boost": 0.8
+        }
+    }
+    r = requests.post(url, headers={'xi-api-key': ELEVEN_LABS_API_KEY}, json=data)
+    output_filename = "reply.mp3"
+    with open(output_filename, "wb") as output:
+        output.write(r.content)
+    audio_file = AudioSegment.from_file("reply.mp3", format="mp3")
+    play(audio_file)
+    while True:
+        if keyboard.is_pressed('space'):
+                record_callback()
+                response = getQstring()
+                return response
 
 # callback function to record audio when spacebar is pressed
 def record_callback():
@@ -100,18 +132,48 @@ def getQstring():
 # main function, everything else is 
 def runner():
     df = pd.read_csv(cvs_file)
-    openai=promptlayer.openai
-    openai.api_key = OPENAI_API_KEY
-    # openai.api_key = os.environ.get("OPENAI_API_KEY")
-    openai.Completion.create(
-                    engine="text-ada-001", 
-                    prompt=ADVISOR_CUSTOM_PROMPT
-                    
-)
+  
 
-    # model = OpenAI(temperature = 0.7, openai_api_key=openai.api_key)
+    model = OpenAI(temperature = 0, openai_api_key=openai.api_key)
+    # model = ChatOpenAI(model_name = "gpt-3.5-turbo-0301", temperature = 0.1, openai_api_key=openai.api_key)
 
-    agent = create_pandas_dataframe_agent(openai, df, verbose=True)
+
+    agent = create_pandas_dataframe_agent(model, df, verbose=True)
+    # print(agent.agent.llm_chain.prompt.input_variables)
+    # print(agent.agent.llm_chain.output_keys)
+    agent.agent.llm_chain.prompt.template = agent_prompt
+    # print("========")
+
+    # "gpt-3.5-turbo-0301"
+    Talk_to_me = Tool(
+    name="talk_to_me",
+    func=voice,
+    description="You can ask a human for guidance when you think you got stuck or you are not sure what to do next. Simply output a question for the Human.")
+    # I talk back, lets talk money, I talk that
+    
+    agent.tools.append(Talk_to_me)
+    
+    # print("========")
+    agent.agent.llm_chain.prompt.input_variables = ['input', 'agent_scratchpad', 'chat_history']
+
+    # print(agent.agent.llm_chain.prompt.input_variables)
+    agent.memory = ConversationBufferWindowMemory(memory_key="chat_history")
+    # agent
+    # print(dir(agent))
+    # my_t = agent.memory
+    # prompt_template = PromptTemplate(input_variables=["output"], template=ADVISOR_CUSTOM_PROMPT)
+    # agent.agent.llm_chain.prompt.template = prompt_template
+    # chain_two = LLMChain(llm=model, prompt=prompt_template, memory = ConversationBufferWindowMemory(k=5)) 
+    # conv_chain = ConversationChain(llm=model)
+#     conversation = ConversationChain(
+#     llm=llm, prompt = PromptTemplate,
+#     memory=ConversationBufferWindowMemory(k=5)
+# )
+    # print(agent.agent.llm_chain.output_keys)
+    # overall_chain = SimpleSequentialChain(
+                # chains=[agent, conv_chain],
+                # verbose=True)
+    # print(my_t)
 
     print("Press the spacebar to ask a question. Press it again to stop.")
     print("When you're all done, print the escape key to exit")
@@ -133,7 +195,10 @@ def runner():
                     data = wf.readframes(chunk)
                 # close the audio stream and PyAudio object
                 stream.close()
+            # print("before")
             answer = agent.run(question)
+            # print("after")
+            print(len(agent.memory.buffer))
             print(answer)
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{ADVISOR_VOICE_ID}/stream"
             data = {
@@ -149,7 +214,7 @@ def runner():
                 output.write(r.content)
             audio_file = AudioSegment.from_file("reply.mp3", format="mp3")
             play(audio_file)
-            print(df)
+            # print(df)
     p.terminate()
 
         
